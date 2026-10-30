@@ -971,11 +971,10 @@
     }
     ev.preventDefault();
     if (el.hasAttribute("data-gap-search")) {
-      // Hand the title to the ordinary search: it is the one place that
-      // knows which of the enabled sources actually has this series.
-      const input = document.getElementById("searchInput");
-      if (input) input.value = el.getAttribute("data-gap-search");
-      if (typeof window.doSearch === "function") window.doSearch();
+      const item = (feedPersonal.gaps || []).find(function (gap) {
+        return gap.title === el.getAttribute("data-gap-search");
+      });
+      if (item) window.openGapFill(item);
       return;
     }
     ignoreGap(el);

@@ -1,0 +1,26 @@
+.gap-fill-modal {
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+.gap-fill-fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0;
+}
+.gap-fill-fields select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.gap-fill-episodes {
+  max-height: 35dvh;
+  overflow-y: auto;
+  padding-left: 24px;
+  line-height: 1.8;
+}
