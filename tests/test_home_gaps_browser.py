@@ -6,6 +6,7 @@ All provider and queue requests are intercepted; no downloads are started.
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ def gap_page():
     downloads = []
     responses = {
         "/api/search": {"results": [{"title": "Example", "url": "https://source.test/example"}]},
+        "/api/series": {"title": "Example", "imdb_id": "tt41298100"},
         "/api/seasons": {"seasons": [
             {"season_number": 1, "url": "https://source.test/s1"},
             {"season_number": 2, "url": "https://source.test/s2"},
@@ -66,6 +68,8 @@ def gap_page():
             if path == "/api/download":
                 downloads.append(route.request.post_data_json)
             body = responses[path]
+            if callable(body):
+                body = body(route.request)
             route.fulfill(status=403 if body.get("error") else 200,
                           content_type="application/json", body=json.dumps(body))
 
@@ -154,9 +158,43 @@ def test_search_strips_library_metadata_and_preserves_display_title(gap_page, fo
     page.on("request", lambda req: searches.append(req.post_data_json)
             if req.url.endswith("/api/search") else None)
     responses["/api/search"]["results"][0]["title"] = expected
+    match = re.search(r"tt\d+", folder)
+    if match:
+        responses["/api/series"]["imdb_id"] = match[0]
     open_gap(page, title=folder)
     assert searches == [{"keyword": expected, "site": "test"}]
     assert page.locator("#gapFillTitle").inner_text() == "Lücken füllen: " + folder
+    assert page.locator("#gapFillSubmit").is_enabled()
+
+
+def test_alternative_provider_title_opens_matching_series_directly(gap_page):
+    page, responses, _ = gap_page
+    responses["/api/search"]["results"][0]["title"] = "Mezametara Saikyou"
+    open_gap(page, title="Reborn as a Space Mercenary (2026-2026) [imdbid-tt41298100]")
+    assert page.locator("#gapFillSource").input_value() == "0"
+    assert page.locator("#gapFillEpisodes li").all_text_contents() == ["S1E2"]
+    assert page.locator("#gapFillSubmit").is_enabled()
+
+
+def test_imdb_mismatch_is_not_overridden_by_equal_title(gap_page):
+    page, responses, _ = gap_page
+    responses["/api/series"]["imdb_id"] = "tt99999999"
+    open_gap(page, title="Example (2026) [imdbid-tt41298100]")
+    assert page.locator("#gapFillSource").input_value() == ""
+    assert page.locator("#gapFillSubmit").is_disabled()
+
+
+def test_verified_series_is_selected_instead_of_first_search_result(gap_page):
+    page, responses, _ = gap_page
+    responses["/api/search"]["results"] = [
+        {"title": "Example", "url": "https://source.test/wrong"},
+        {"title": "Alternative title", "url": "https://source.test/correct"},
+    ]
+    responses["/api/series"] = lambda req: {
+        "imdb_id": "tt41298100" if "correct" in req.url else "tt99999999",
+    }
+    open_gap(page, title="Example (2026) [imdbid-tt41298100]")
+    assert page.locator("#gapFillSource").input_value() == "1"
     assert page.locator("#gapFillSubmit").is_enabled()
 
 

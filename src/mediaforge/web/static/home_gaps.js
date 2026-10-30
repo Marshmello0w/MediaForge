@@ -62,6 +62,30 @@
     return !ignored.includes(slot) && !ignored.includes("S" + season) &&
       (ctx.missing.includes(slot) || ctx.missing.includes("S" + season));
   }
+  function imdbId(value) {
+    const match = String(value || "").match(/\btt\d+\b/i);
+    return match ? match[0].toLowerCase() : "";
+  }
+  async function findMatchingSeries(ctx, titleMatches) {
+    const folderId = ctx.item.title.match(/[\[{]imdb(?:id)?[-:=\s]+(tt\d+)[\]}]/i);
+    const expectedId = imdbId(ctx.item.imdb_id || (folderId && folderId[1]));
+    if (!expectedId) return ctx.hits.findIndex(titleMatches);
+    if (!ctx.hits.length) return -1;
+    message(text("Ordne die Serie zu …", "Matching the series …"));
+    // Provider titles may use another language. Check the identity before opening one.
+    for (let i = 0; i < ctx.hits.length; i += 3) {
+      const matches = await Promise.all(ctx.hits.slice(i, i + 3).map(async function (hit) {
+        try {
+          const data = await request("/api/series?url=" + encodeURIComponent(hit.url), ctx);
+          return !data.is_movie && imdbId(data.imdb_id) === expectedId;
+        } catch (error) { return false; }
+      }));
+      if (current !== ctx) return -1;
+      const index = matches.indexOf(true);
+      if (index !== -1) return i + index;
+    }
+    return -1;
+  }
 
   window.openGapFill = async function (item) {
     if (current && current.submitting) return;
@@ -111,6 +135,9 @@
       ctx.hits.forEach(function (hit, i) {
         source.add(new Option(hit.sourceLabel + " — " + hit.title, String(i)));
       });
+      source.disabled = true;
+      const match = await findMatchingSeries(ctx, titleMatches);
+      if (current !== ctx) return;
       source.disabled = !ctx.hits.length;
       message(ctx.hits.length
         ? text("Wähle die passende Serie und Quelle.", "Choose the matching series and source.")
@@ -118,9 +145,8 @@
           ? text("Die Suche ist teilweise fehlgeschlagen. Schließe das Fenster und versuche es erneut.",
             "Some searches failed. Close this window and try again.")
           : text("Keine Serie in den aktivierten Quellen gefunden.", "No series found in the enabled sources."));
-      // Only an exact title match may be opened without a choice by the user.
-      if (ctx.hits.length && titleMatches(ctx.hits[0])) {
-        source.value = "0";
+      if (match !== -1) {
+        source.value = String(match);
         await loadEpisodes(ctx);
       }
     } catch (error) { report(error, ctx); }
