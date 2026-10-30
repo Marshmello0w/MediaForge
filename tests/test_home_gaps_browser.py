@@ -136,6 +136,30 @@ def test_different_release_year_is_not_automatically_selected(gap_page):
     assert page.locator("#gapFillSubmit").is_disabled()
 
 
+@pytest.mark.parametrize("folder, expected", [
+    ("Reborn as a Space Mercenary I Woke Up Piloting the Strongest Starship! "
+     "(2026-2026) [imdbid-tt41298100]",
+     "Reborn as a Space Mercenary I Woke Up Piloting the Strongest Starship!"),
+    ("Example (2026) [imdbid-tt41298100]", "Example"),
+    ("Example (2020-2026) [tmdbid-1234] [tvdbid-5678]", "Example"),
+    ("Example (2020–2026) {imdb-tt41298100}", "Example"),
+    ("Example (2020-) [tmdb-1234]", "Example"),
+    ("Example [imdbid-tt41298100] (2026)", "Example"),
+    ("[Oshi no Ko] (2023-2026) [imdbid-tt21030032]", "[Oshi no Ko]"),
+    ("Example (The Animation) [imdbid-tt41298100]", "Example (The Animation)"),
+])
+def test_search_strips_library_metadata_and_preserves_display_title(gap_page, folder, expected):
+    page, responses, _ = gap_page
+    searches = []
+    page.on("request", lambda req: searches.append(req.post_data_json)
+            if req.url.endswith("/api/search") else None)
+    responses["/api/search"]["results"][0]["title"] = expected
+    open_gap(page, title=folder)
+    assert searches == [{"keyword": expected, "site": "test"}]
+    assert page.locator("#gapFillTitle").inner_text() == "Lücken füllen: " + folder
+    assert page.locator("#gapFillSubmit").is_enabled()
+
+
 def test_failed_episode_lookup_cannot_queue_partial_data(gap_page):
     page, responses, downloads = gap_page
     responses["/api/episodes"] = {"error": "Source unavailable"}

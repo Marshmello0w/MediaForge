@@ -49,6 +49,13 @@
   function normalTitle(value) {
     return String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
   }
+  function searchTitle(value) {
+    let result = String(value || "").trim();
+    // Strip library naming suffixes, keeping brackets that belong to the title.
+    const suffix = /\s*(?:[\[{](?:imdb|tmdb|tvdb)(?:id)?[-:=\s]+(?:tt)?\d+[\]}]|\(\d{4}(?:\s*[-–—]\s*(?:\d{4})?)?\))\s*$/i;
+    while (suffix.test(result)) result = result.replace(suffix, "").trim();
+    return result;
+  }
   function wanted(ctx, season, episode) {
     const slot = "S" + season + "E" + episode;
     const ignored = ctx.item.ignored_slots || [];
@@ -83,8 +90,12 @@
       const asked = sources.filter(function (s) {
         return s.searchable !== false && window._sourceIsOn(s, enabled);
       });
+      const keyword = searchTitle(item.title);
+      function titleMatches(hit) {
+        const key = normalTitle(hit.title);
+        return key === normalTitle(item.title) || key === normalTitle(keyword);
+      }
       const results = await Promise.allSettled(asked.map(async function (s) {
-        const keyword = item.title.replace(/\s*\(\d{4}\)\s*$/, "").trim();
         const data = await request("/api/search", ctx, { keyword: keyword, site: s.id });
         return (data.results || []).filter(function (hit) {
           return hit.url && !hit.is_movie;
@@ -93,8 +104,7 @@
       if (current !== ctx) return;
       ctx.hits = results.flatMap(function (r) { return r.status === "fulfilled" ? r.value : []; });
       ctx.hits.sort(function (a, b) {
-        return Number(normalTitle(b.title) === normalTitle(item.title)) -
-          Number(normalTitle(a.title) === normalTitle(item.title));
+        return Number(titleMatches(b)) - Number(titleMatches(a));
       });
       const failed = results.some(function (r) { return r.status === "rejected"; });
       source.add(new Option(text("Serie auswählen", "Choose series"), ""));
@@ -109,7 +119,7 @@
             "Some searches failed. Close this window and try again.")
           : text("Keine Serie in den aktivierten Quellen gefunden.", "No series found in the enabled sources."));
       // Only an exact title match may be opened without a choice by the user.
-      if (ctx.hits.length && normalTitle(ctx.hits[0].title) === normalTitle(item.title)) {
+      if (ctx.hits.length && titleMatches(ctx.hits[0])) {
         source.value = "0";
         await loadEpisodes(ctx);
       }
