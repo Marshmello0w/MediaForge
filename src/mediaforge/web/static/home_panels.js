@@ -649,7 +649,7 @@
          head(HT("dash_gaps"), HT("dash_gap_count").replace("{}", String(total)),
               OWN_ICONS.gaps),
          '<ul class="dash-gaps">' + paged.rowsHtml + '</ul>' + paged.pagerHtml,
-         '<a class="hp-more" href="/stats">' + esc(HT("dash_gaps_all")) + ' ›</a>');
+         '<a class="hp-more" href="/stats#incomplete">' + esc(HT("dash_gaps_all")) + ' ›</a>');
   }
 
   /** Same hashing home_feed.js and the Library page use for placeholder art,

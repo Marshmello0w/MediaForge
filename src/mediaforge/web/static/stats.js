@@ -1631,3 +1631,14 @@ function renderStats(data, container) {
 // (mfLazyPanel, monitoring.html); the standalone page loads at once.
 if (window.mfLazyPanel) window.mfLazyPanel("stats", function () { loadStats(); });
 else loadStats();
+
+function openLinkedIncompleteModal() {
+  if (window.location.hash !== "#incomplete") return;
+  // The gap list has its own endpoint and also works with media stats disabled.
+  _modalView.incomplete.q = "";
+  switchIncompleteView("incomplete");
+  openIncompleteModal();
+}
+
+window.addEventListener("hashchange", openLinkedIncompleteModal);
+openLinkedIncompleteModal();
