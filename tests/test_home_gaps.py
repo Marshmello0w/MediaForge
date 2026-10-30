@@ -31,3 +31,15 @@ def test_ignored_series_is_not_offered_for_gap_filling(monkeypatch):
     assert not _feed_gap_rows([{
         "folder": "Example", "seasons": {"1": [{"episode": 3}]},
     }])
+
+
+def test_statistics_preserve_ignored_slots_for_missing_season_download(monkeypatch):
+    from mediaforge.web.routes import stats
+
+    monkeypatch.setattr(stats, "_active_library_cache", lambda cache: cache)
+    monkeypatch.setattr(stats, "get_media_ignores", lambda: {"example": {"slots": ["S1E2"]}})
+    result = stats._compute_media_stats({"test": {"data": {"titles": [{
+        "folder": "Example", "seasons": {"2": [{"episode": 1, "path": "test.mkv"}]},
+    }]}}})
+    assert result["incomplete"][0]["missing"] == ["S1"]
+    assert result["incomplete"][0]["ignored_slots"] == ["S1E2"]

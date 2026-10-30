@@ -1,6 +1,7 @@
 (function () {
   const overlay = document.getElementById("gapFillOverlay");
   if (!overlay) return;
+  const api = window.MFGapDownloads;
   const dialog = overlay.querySelector('[role="dialog"]');
   const title = document.getElementById("gapFillTitle");
   const slots = document.getElementById("gapFillSlots");
@@ -9,12 +10,13 @@
   const language = document.getElementById("gapFillLanguage");
   const provider = document.getElementById("gapFillProvider");
   const list = document.getElementById("gapFillEpisodes");
+  const selectAll = document.getElementById("gapFillSelectAll");
   const submit = document.getElementById("gapFillSubmit");
+  const submitAll = document.getElementById("gapFillAllSubmit");
   const close = document.getElementById("gapFillClose");
   let current = null;
   let previousFocus;
   let previousOverflow;
-
   function text(de, en) { return window.t(de, en); }
   function message(value) { status.textContent = value; }
   function options(select, values, preferred) {
@@ -27,131 +29,78 @@
     options(language, []);
     options(provider, []);
     list.replaceChildren();
-    submit.disabled = true;
-    submit.textContent = text("Lücken füllen", "Fill gaps");
-  }
-  async function request(url, ctx, body) {
-    const response = await fetch(url, {
-      method: body ? "POST" : "GET",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.any([ctx.cancel.signal, AbortSignal.timeout(30000)]),
-    });
-    const data = await response.json();
-    if (!response.ok || data.error) throw new Error(data.error || "HTTP " + response.status);
-    return data;
+    selectAll.checked = selectAll.indeterminate = false;
+    selectAll.disabled = submit.disabled = submitAll.disabled = true;
+    submit.textContent = text("Auswahl zur Warteschlange", "Queue selected");
+    submitAll.textContent = text("Alle fehlenden zur Warteschlange", "Queue all missing");
+    document.getElementById("gapFillSelectAllLabel").textContent = text("Alle fehlenden auswählen", "Select all missing");
   }
   function report(error, ctx) {
     if (current === ctx && !ctx.cancel.signal.aborted) {
       message(text("Anfrage fehlgeschlagen: ", "Request failed: ") + error.message);
     }
   }
-  function normalTitle(value) {
-    return String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  function available(ctx) { return api.available(ctx.episodes, language.value); }
+  function selected(ctx) { return available(ctx).filter(function (ep) { return ctx.selected.has(ep.url); }); }
+  function updateSelection(ctx) {
+    const episodes = available(ctx), count = selected(ctx).length;
+    selectAll.checked = episodes.length > 0 && count === episodes.length;
+    selectAll.indeterminate = count > 0 && count < episodes.length;
+    selectAll.disabled = ctx.submitting || !episodes.length;
+    submit.disabled = ctx.submitting || !ctx.ready || !count;
+    submitAll.disabled = ctx.submitting || !ctx.ready || !episodes.length;
+    if (ctx.ready && !ctx.submitting) message(count + " / " + episodes.length + " " +
+      text("verfügbare fehlende Episoden ausgewählt.", "available missing episodes selected."));
   }
-  function searchTitle(value) {
-    let result = String(value || "").trim();
-    // Strip library naming suffixes, keeping brackets that belong to the title.
-    const suffix = /\s*(?:[\[{](?:imdb|tmdb|tvdb)(?:id)?[-:=\s]+(?:tt)?\d+[\]}]|\(\d{4}(?:\s*[-–—]\s*(?:\d{4})?)?\))\s*$/i;
-    while (suffix.test(result)) result = result.replace(suffix, "").trim();
-    return result;
+  function renderEpisodes(ctx) {
+    list.replaceChildren();
+    available(ctx).forEach(function (ep) {
+      const li = document.createElement("li"), label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.className = "chb-main";
+      box.checked = ctx.selected.has(ep.url);
+      box.disabled = !!ctx.submitting;
+      box.addEventListener("change", function () {
+        if (box.checked) ctx.selected.add(ep.url); else ctx.selected.delete(ep.url);
+        updateSelection(ctx);
+      });
+      label.append(box, document.createTextNode(ep.slot +
+        (ep.title_de || ep.title_en ? " — " + (ep.title_de || ep.title_en) : "")));
+      li.appendChild(label);
+      list.appendChild(li);
+    });
+    updateSelection(ctx);
   }
-  function wanted(ctx, season, episode) {
-    const slot = "S" + season + "E" + episode;
-    const ignored = ctx.item.ignored_slots || [];
-    return !ignored.includes(slot) && !ignored.includes("S" + season) &&
-      (ctx.missing.includes(slot) || ctx.missing.includes("S" + season));
-  }
-  function imdbId(value) {
-    const match = String(value || "").match(/\btt\d+\b/i);
-    return match ? match[0].toLowerCase() : "";
-  }
-  async function findMatchingSeries(ctx, titleMatches) {
-    const folderId = ctx.item.title.match(/[\[{]imdb(?:id)?[-:=\s]+(tt\d+)[\]}]/i);
-    const expectedId = imdbId(ctx.item.imdb_id || (folderId && folderId[1]));
-    if (!expectedId) return ctx.hits.findIndex(titleMatches);
-    if (!ctx.hits.length) return -1;
-    message(text("Ordne die Serie zu …", "Matching the series …"));
-    // Provider titles may use another language. Check the identity before opening one.
-    for (let i = 0; i < ctx.hits.length; i += 3) {
-      const matches = await Promise.all(ctx.hits.slice(i, i + 3).map(async function (hit) {
-        try {
-          const data = await request("/api/series?url=" + encodeURIComponent(hit.url), ctx);
-          return !data.is_movie && imdbId(data.imdb_id) === expectedId;
-        } catch (error) { return false; }
-      }));
-      if (current !== ctx) return -1;
-      const index = matches.indexOf(true);
-      if (index !== -1) return i + index;
-    }
-    return -1;
-  }
-
   window.openGapFill = async function (item) {
     if (current && current.submitting) return;
     if (current) current.cancel.abort();
-    else {
-      previousFocus = document.activeElement;
-      previousOverflow = document.body.style.overflow;
-    }
-    const ctx = { item: item, missing: item.missing_slots || item.missing || [],
-      cancel: new AbortController(), episodes: [], hits: [] };
+    else { previousFocus = document.activeElement; previousOverflow = document.body.style.overflow; }
+    const ctx = { item: item, cancel: new AbortController(), episodes: [], selected: new Set(), queued: new Set() };
     current = ctx;
     reset();
     options(source, []);
     title.textContent = text("Lücken füllen: ", "Fill gaps: ") + item.title;
-    slots.textContent = ctx.missing.join(", ");
-    message(text("Suche nach der Serie …", "Searching for the series …"));
+    slots.textContent = (item.missing_slots || item.missing || []).join(", ");
+    message(text("Suche und ordne die Serie zu …", "Searching and matching the series …"));
     overlay.style.display = "block";
     document.body.style.overflow = "hidden";
     dialog.focus();
     try {
-      const [sources, settings] = await Promise.all([
-        window.loadSearchSources(), window.loadGeneralSettings(),
-      ]);
+      const catalogue = await api.sources(ctx);
+      const result = await api.find(item, ctx, catalogue);
       if (current !== ctx) return;
-      const enabled = ((settings || {}).sources || {}).enabled || {};
-      const asked = sources.filter(function (s) {
-        return s.searchable !== false && window._sourceIsOn(s, enabled);
-      });
-      const keyword = searchTitle(item.title);
-      function titleMatches(hit) {
-        const key = normalTitle(hit.title);
-        return key === normalTitle(item.title) || key === normalTitle(keyword);
-      }
-      const results = await Promise.allSettled(asked.map(async function (s) {
-        const data = await request("/api/search", ctx, { keyword: keyword, site: s.id });
-        return (data.results || []).filter(function (hit) {
-          return hit.url && !hit.is_movie;
-        }).map(function (hit) { return { ...hit, sourceLabel: s.label }; });
-      }));
-      if (current !== ctx) return;
-      ctx.hits = results.flatMap(function (r) { return r.status === "fulfilled" ? r.value : []; });
-      ctx.hits.sort(function (a, b) {
-        return Number(titleMatches(b)) - Number(titleMatches(a));
-      });
-      const failed = results.some(function (r) { return r.status === "rejected"; });
+      ctx.hits = result.hits;
       source.add(new Option(text("Serie auswählen", "Choose series"), ""));
-      ctx.hits.forEach(function (hit, i) {
-        source.add(new Option(hit.sourceLabel + " — " + hit.title, String(i)));
-      });
-      source.disabled = true;
-      const match = await findMatchingSeries(ctx, titleMatches);
-      if (current !== ctx) return;
+      ctx.hits.forEach(function (hit, i) { source.add(new Option(hit.sourceLabel + " — " + hit.title, String(i))); });
       source.disabled = !ctx.hits.length;
       message(ctx.hits.length
         ? text("Wähle die passende Serie und Quelle.", "Choose the matching series and source.")
-        : failed
-          ? text("Die Suche ist teilweise fehlgeschlagen. Schließe das Fenster und versuche es erneut.",
-            "Some searches failed. Close this window and try again.")
+        : result.failed ? text("Die Suche ist teilweise fehlgeschlagen.", "Some searches failed.")
           : text("Keine Serie in den aktivierten Quellen gefunden.", "No series found in the enabled sources."));
-      if (match !== -1) {
-        source.value = String(match);
-        await loadEpisodes(ctx);
-      }
+      if (result.match !== -1) { source.value = String(result.match); await loadEpisodes(ctx); }
     } catch (error) { report(error, ctx); }
   };
-
   async function loadEpisodes(ctx) {
     if (ctx.lookup) ctx.lookup.cancel.abort();
     const lookup = { cancel: new AbortController() };
@@ -159,105 +108,84 @@
     ctx.cancel.signal.addEventListener("abort", function () { lookup.cancel.abort(); }, { once: true });
     reset();
     ctx.episodes = [];
+    ctx.ready = false;
     ctx.hit = source.value === "" ? null : ctx.hits[Number(source.value)];
     if (!ctx.hit) { message(text("Wähle eine Serie.", "Choose a series.")); return; }
     message(text("Prüfe fehlende Episoden …", "Checking missing episodes …"));
     try {
-      const data = await request("/api/seasons?url=" + encodeURIComponent(ctx.hit.url), lookup);
-      const seasons = (data.seasons || []).filter(function (s) {
-        return !s.are_movies && ctx.missing.some(function (slot) {
-          return slot === "S" + s.season_number || slot.startsWith("S" + s.season_number + "E");
-        });
-      });
-      const episodes = [];
-      // Keep scraping concurrency at three, like the regular series modal.
-      for (let i = 0; i < seasons.length; i += 3) {
-        const batch = await Promise.all(seasons.slice(i, i + 3).map(async function (s) {
-          const result = await request("/api/episodes?url=" + encodeURIComponent(s.url), lookup);
-          return (result.episodes || []).filter(function (ep) {
-            return ep.url && !ep.downloaded && wanted(ctx, s.season_number, ep.episode_number);
-          }).map(function (ep) { return { ...ep, slot: "S" + s.season_number + "E" + ep.episode_number }; });
-        }));
-        episodes.push(...batch.flat());
-      }
+      const episodes = await api.episodes(ctx.item, ctx.hit, lookup);
       if (current !== ctx || ctx.lookup !== lookup) return;
-      ctx.episodes = episodes;
-      if (!ctx.episodes.length) {
-        message(text("Keine nachladbaren Lücken gefunden.", "No downloadable gaps found."));
-        return;
-      }
+      ctx.episodes = episodes.filter(function (ep) { return !ctx.queued.has(ep.slot); });
+      ctx.selected = new Set(ctx.episodes.map(function (ep) { return ep.url; }));
+      if (!ctx.episodes.length) { message(text("Keine nachladbaren Lücken gefunden.", "No downloadable gaps found.")); return; }
       const langs = [...new Set(ctx.episodes.flatMap(function (ep) { return ep.languages || []; }))];
-      const existing = document.getElementById("languageSelect");
-      if (!langs.length) {
-        const result = await request("/api/providers?url=" + encodeURIComponent(ctx.episodes[0].url), lookup);
-        langs.push(...Object.keys(result.providers || {}));
-      }
+      if (!langs.length) langs.push(...Object.keys(await api.providers(ctx.episodes[0], lookup)));
       if (current !== ctx || ctx.lookup !== lookup) return;
+      const existing = document.getElementById("languageSelect");
       options(language, langs, (existing && existing.value) || "German Dub");
       await loadProviders(ctx);
-    } catch (error) {
-      if (ctx.lookup === lookup && !lookup.cancel.signal.aborted) report(error, ctx);
-    }
-  }
-  function selectedEpisodes(ctx) {
-    return ctx.episodes.filter(function (ep) {
-      return !ep.languages || !ep.languages.length || ep.languages.includes(language.value);
-    });
+    } catch (error) { if (ctx.lookup === lookup && !lookup.cancel.signal.aborted) report(error, ctx); }
   }
   async function loadProviders(ctx) {
-    const lookup = ctx.lookup;
-    const selectedLanguage = language.value;
+    const lookup = ctx.lookup, chosenLanguage = language.value;
     const seq = ctx.providerSeq = (ctx.providerSeq || 0) + 1;
+    ctx.ready = false;
+    submit.textContent = text("Auswahl zur Warteschlange", "Queue selected");
     options(provider, []);
-    submit.disabled = true;
-    const episodes = selectedEpisodes(ctx);
-    list.replaceChildren();
-    episodes.forEach(function (ep) {
-      const li = document.createElement("li");
-      li.textContent = ep.slot + (ep.title_de || ep.title_en ? " — " + (ep.title_de || ep.title_en) : "");
-      list.appendChild(li);
-    });
-    if (!selectedLanguage || !episodes.length) {
-      message(text("Keine Episoden in dieser Sprache verfügbar.", "No episodes available in this language."));
-      return;
-    }
+    renderEpisodes(ctx);
+    const episodes = available(ctx);
+    if (!chosenLanguage || !episodes.length) { message(text("Keine Episoden in dieser Sprache verfügbar.", "No episodes available in this language.")); return; }
     message(text("Prüfe Downloadquellen …", "Checking download providers …"));
     try {
-      const data = await request("/api/providers?url=" + encodeURIComponent(episodes[0].url), lookup);
+      const providers = await api.providers(episodes[0], lookup);
       if (current !== ctx || ctx.lookup !== lookup || ctx.providerSeq !== seq) return;
       const existing = document.getElementById("providerSelect");
-      options(provider, (data.providers || {})[selectedLanguage] || [], (existing && existing.value) || "VOE");
-      submit.disabled = !provider.value;
-      message(provider.value
-        ? text("Episoden zum Nachladen: ", "Episodes to download: ") + episodes.length +
-          ". " + text("Nicht verfügbare oder bereits vorhandene Episoden werden ausgelassen.",
-            "Unavailable or already stored episodes are skipped.")
-        : text("Keine Downloadquelle für diese Sprache verfügbar.", "No download provider available for this language."));
+      options(provider, providers[chosenLanguage] || [], (existing && existing.value) || "VOE");
+      ctx.ready = !!provider.value;
+      updateSelection(ctx);
+      if (!ctx.ready) message(text("Keine Downloadquelle für diese Sprache verfügbar.", "No download provider available for this language."));
     } catch (error) { if (ctx.lookup === lookup && ctx.providerSeq === seq) report(error, ctx); }
   }
   source.addEventListener("change", function () { if (current) loadEpisodes(current); });
   language.addEventListener("change", function () { if (current) loadProviders(current); });
-  submit.addEventListener("click", async function () {
+  selectAll.addEventListener("change", function () {
+    if (!current || current.submitting) return;
+    available(current).forEach(function (ep) {
+      if (selectAll.checked) current.selected.add(ep.url); else current.selected.delete(ep.url);
+    });
+    renderEpisodes(current);
+  });
+  async function enqueue(all) {
     const ctx = current;
-    if (!ctx || ctx.submitting || submit.disabled) return;
+    if (!ctx || ctx.submitting || (all ? submitAll.disabled : submit.disabled)) return;
+    const episodes = all ? available(ctx) : selected(ctx);
     ctx.submitting = true;
-    source.disabled = language.disabled = provider.disabled = submit.disabled = close.disabled = true;
+    source.disabled = language.disabled = provider.disabled = close.disabled = true;
+    renderEpisodes(ctx);
     message(text("Füge Episoden zur Warteschlange hinzu …", "Adding episodes to the queue …"));
     try {
-      await request("/api/download", ctx, {
-        series_url: ctx.hit.url, title: ctx.hit.title,
-        episodes: selectedEpisodes(ctx).map(function (ep) { return ep.url; }),
-        language: language.value, provider: provider.value,
-      });
+      await api.enqueue(ctx, episodes, language.value, provider.value, ctx);
+      episodes.forEach(function (ep) { ctx.queued.add(ep.slot); ctx.selected.delete(ep.url); });
+      ctx.episodes = ctx.episodes.filter(function (ep) { return !ctx.queued.has(ep.slot); });
+      ctx.submitting = false;
+      if (ctx.episodes.length) {
+        source.disabled = language.disabled = provider.disabled = false;
+        await loadProviders(ctx);
+      } else {
+        ctx.ready = false;
+        renderEpisodes(ctx);
+        submit.textContent = submitAll.textContent = text("Hinzugefügt", "Added");
+      }
+      if (!ctx.ready) submit.textContent = text("Hinzugefügt", "Added");
       message(text("Zur Download-Warteschlange hinzugefügt.", "Added to download queue."));
-      submit.textContent = text("Hinzugefügt", "Added");
-    } catch (error) { report(error, ctx); }
+    } catch (error) { ctx.ready = false; report(error, ctx); }
     finally { ctx.submitting = false; close.disabled = false; }
-  });
+  }
+  submit.addEventListener("click", function () { enqueue(false); });
+  submitAll.addEventListener("click", function () { enqueue(true); });
   function dismiss() {
     if (!current || current.submitting) return;
-    current.cancel.abort();
-    current = null;
+    current.cancel.abort(); current = null;
     overlay.style.display = "none";
     document.body.style.overflow = previousOverflow;
     if (previousFocus && previousFocus.isConnected) previousFocus.focus();
@@ -265,10 +193,10 @@
   close.addEventListener("click", dismiss);
   overlay.addEventListener("click", function (event) { if (event.target === overlay) dismiss(); });
   overlay.addEventListener("keydown", function (event) {
-    if (event.key === "Escape") { event.preventDefault(); dismiss(); }
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); dismiss(); }
     if (event.key !== "Tab") return;
-    const buttons = [...dialog.querySelectorAll("button, select")].filter(function (el) { return !el.disabled; });
-    const first = buttons[0], last = buttons[buttons.length - 1];
+    const controls = [...dialog.querySelectorAll("button, select, input")].filter(function (el) { return !el.disabled; });
+    const first = controls[0], last = controls[controls.length - 1];
     if (!first) { event.preventDefault(); return; }
     if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
       event.preventDefault(); last.focus();

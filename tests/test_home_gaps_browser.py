@@ -25,6 +25,8 @@ def gap_page():
 
     downloads = []
     responses = {
+        "/api/search/sources": {"sources": [{"id": "test", "label": "Test", "enabled": True}]},
+        "/api/settings/client": {},
         "/api/search": {"results": [{"title": "Example", "url": "https://source.test/example"}]},
         "/api/series": {"title": "Example", "imdb_id": "tt41298100"},
         "/api/seasons": {"seasons": [
@@ -81,7 +83,8 @@ def gap_page():
             window.loadGeneralSettings = async () => ({});
             window._sourceIsOn = s => s.enabled;
         """)
-        page.add_script_tag(content=(WEB / "static/home_gaps.js").read_text(encoding="utf-8"))
+        for name in ("gap_downloads.js", "home_gaps.js", "gap_batch.js"):
+            page.add_script_tag(content=(WEB / "static" / name).read_text(encoding="utf-8"))
         yield page, responses, downloads
         browser.close()
 
@@ -229,12 +232,143 @@ def test_escape_restores_focus_and_scroll(gap_page):
     assert page.evaluate("document.body.style.overflow") == ""
 
 
+def test_individual_episode_selection_queues_only_checked_episode(gap_page):
+    page, _, downloads = gap_page
+    open_gap(page)
+    page.locator("#gapFillLanguage").select_option("English Sub")
+    page.locator("#gapFillSubmit:enabled").wait_for()
+    page.locator("#gapFillEpisodes input").nth(1).uncheck()
+    assert page.locator("#gapFillSelectAll").evaluate("el => el.indeterminate")
+    page.locator("#gapFillSubmit").click()
+    page.wait_for_function("document.querySelectorAll('#gapFillEpisodes li').length === 1")
+    assert downloads[0]["episodes"] == ["https://source.test/e2"]
+    page.locator("#gapFillEpisodes input").check()
+    page.locator("#gapFillSubmit").click()
+    page.wait_for_function("document.querySelector('#gapFillSubmit').textContent === 'Hinzugefügt'")
+    assert downloads[1]["episodes"] == ["https://source.test/e3"]
+
+
+def test_all_missing_button_works_with_empty_individual_selection(gap_page):
+    page, _, downloads = gap_page
+    open_gap(page)
+    page.locator("#gapFillLanguage").select_option("English Sub")
+    page.locator("#gapFillSubmit:enabled").wait_for()
+    page.locator("#gapFillSelectAll").uncheck()
+    assert page.locator("#gapFillSubmit").is_disabled()
+    assert page.locator("#gapFillAllSubmit").is_enabled()
+    page.locator("#gapFillAllSubmit").click()
+    page.wait_for_function("document.querySelector('#gapFillSubmit').textContent === 'Hinzugefügt'")
+    assert downloads[0]["episodes"] == ["https://source.test/e2", "https://source.test/e3"]
+
+
+def batch_searches(responses):
+    responses["/api/search"] = lambda req: {"results": [{
+        "title": req.post_data_json["keyword"],
+        "url": "https://source.test/" + req.post_data_json["keyword"],
+    }]}
+
+
+def test_batch_queues_selected_slots_for_multiple_series(gap_page):
+    page, responses, downloads = gap_page
+    batch_searches(responses)
+    page.evaluate("""() => window.openGapFillBatch([
+        {title:'First', folder:'first', missing_slots:['S1E2']},
+        {title:'Second', folder:'second', missing_slots:['S1E4']}
+    ])""", isolated_context=False)
+    page.locator("#gapBatchSubmit:enabled").wait_for()
+    page.locator("#gapBatchSubmit").click()
+    page.wait_for_function("document.querySelector('#gapBatchSubmit').textContent === 'Abgeschlossen'")
+    assert [(d["title"], d["episodes"]) for d in downloads] == [
+        ("First", ["https://source.test/e2"]), ("Second", ["https://source.test/e4"]),
+    ]
+    assert all(d["language"] == "German Dub" and d["provider"] == "VOE" for d in downloads)
+
+
+def test_batch_language_must_cover_all_selected_episodes(gap_page):
+    page, responses, downloads = gap_page
+    batch_searches(responses)
+    page.evaluate("""() => window.openGapFillBatch([
+        {title:'First', folder:'first', missing_slots:['S1E2','S1E3']}
+    ])""", isolated_context=False)
+    assert page.locator("#gapBatchSubmit").is_disabled()
+    page.locator("#gapBatchLanguage").select_option("English Sub")
+    page.locator("#gapBatchSubmit:enabled").wait_for()
+    page.locator("#gapBatchSubmit").click()
+    page.wait_for_function("document.querySelector('#gapBatchSubmit').textContent === 'Abgeschlossen'")
+    assert downloads[0]["episodes"] == ["https://source.test/e2", "https://source.test/e3"]
+
+
+def test_batch_reports_partial_failure_and_only_clears_successful_series(gap_page):
+    page, responses, downloads = gap_page
+    batch_searches(responses)
+    responses["/api/download"] = lambda req: {"error": "not permitted"} if req.post_data_json["title"] == "Second" else {"queue_id": 42}
+    page.evaluate("""() => {
+        window.queuedFolders = [];
+        return window.openGapFillBatch([
+            {title:'First', folder:'first', missing_slots:['S1E2']},
+            {title:'Second', folder:'second', missing_slots:['S1E4']}
+        ], item => window.queuedFolders.push(item.folder));
+    }""", isolated_context=False)
+    page.locator("#gapBatchSubmit:enabled").wait_for()
+    page.locator("#gapBatchSubmit").click()
+    page.wait_for_function("document.querySelector('#gapBatchSubmit').textContent === 'Abgeschlossen'")
+    assert page.evaluate("window.queuedFolders", isolated_context=False) == ["first"]
+    assert "not permitted" in page.locator("#gapBatchEntries").inner_text()
+    assert "1 / 2" in page.locator("#gapBatchStatus").inner_text()
+    assert len(downloads) == 2
+
+
+def test_batch_does_not_silently_skip_an_unavailable_selected_slot(gap_page):
+    page, responses, downloads = gap_page
+    batch_searches(responses)
+    page.evaluate("""() => window.openGapFillBatch([
+        {title:'First', folder:'first', missing_slots:['S1E2','S1E9']}
+    ])""", isolated_context=False)
+    assert page.locator("#gapBatchSubmit").is_disabled()
+    assert "S1E9" in page.locator("#gapBatchEntries").inner_text()
+    assert not downloads
+
+
+def test_batch_requires_a_shared_provider(gap_page):
+    page, responses, downloads = gap_page
+    batch_searches(responses)
+    responses["/api/providers"] = lambda req: {"providers": {
+        "German Dub": ["VOE"] if "e2" in req.url else ["Filemoon"],
+    }}
+    page.evaluate("""() => window.openGapFillBatch([
+        {title:'First', folder:'first', missing_slots:['S1E2']},
+        {title:'Second', folder:'second', missing_slots:['S1E4']}
+    ])""", isolated_context=False)
+    assert page.locator("#gapBatchSubmit").is_disabled()
+    assert "Kein gemeinsamer Anbieter" in page.locator("#gapBatchStatus").inner_text()
+    assert not downloads
+
+
+def test_unmatched_series_can_be_removed_from_batch_without_guessing(gap_page):
+    page, responses, downloads = gap_page
+    responses["/api/search"] = lambda req: {"results": [{
+        "title": "First" if req.post_data_json["keyword"] == "First" else "Unrelated",
+        "url": "https://source.test/example",
+    }]}
+    page.evaluate("""() => window.openGapFillBatch([
+        {title:'First', folder:'first', missing_slots:['S1E2']},
+        {title:'Second', folder:'second', missing_slots:['S1E4']}
+    ])""", isolated_context=False)
+    assert page.locator("#gapBatchSubmit").is_disabled()
+    page.locator("#gapBatchEntries input").nth(1).uncheck()
+    page.locator("#gapBatchSubmit:enabled").wait_for()
+    page.locator("#gapBatchSubmit").click()
+    page.wait_for_function("document.querySelector('#gapBatchSubmit').textContent === 'Abgeschlossen'")
+    assert len(downloads) == 1
+    assert downloads[0]["title"] == "First"
+
+
 @pytest.mark.parametrize("width", [390, 1280])
 def test_dialog_fits_viewport_and_keeps_keyboard_focus(gap_page, width):
     page, _, _ = gap_page
     page.set_viewport_size({"width": width, "height": 844})
     open_gap(page)
-    box = page.locator(".gap-fill-modal").bounding_box()
+    box = page.locator("#gapFillOverlay .gap-fill-modal").bounding_box()
     assert box["x"] >= 0
     assert box["x"] + box["width"] <= width
     assert box["y"] >= 0
