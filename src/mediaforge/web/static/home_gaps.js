@@ -121,8 +121,7 @@
       const langs = [...new Set(ctx.episodes.flatMap(function (ep) { return ep.languages || []; }))];
       if (!langs.length) langs.push(...Object.keys(await api.providers(ctx.episodes[0], lookup)));
       if (current !== ctx || ctx.lookup !== lookup) return;
-      const existing = document.getElementById("languageSelect");
-      options(language, langs, (existing && existing.value) || "German Dub");
+      options(language, langs, ctx.defaults.language);
       await loadProviders(ctx);
     } catch (error) { if (ctx.lookup === lookup && !lookup.cancel.signal.aborted) report(error, ctx); }
   }
@@ -139,8 +138,7 @@
     try {
       const providers = await api.providers(episodes[0], lookup);
       if (current !== ctx || ctx.lookup !== lookup || ctx.providerSeq !== seq) return;
-      const existing = document.getElementById("providerSelect");
-      options(provider, providers[chosenLanguage] || [], (existing && existing.value) || "VOE");
+      options(provider, providers[chosenLanguage] || [], ctx.defaults.provider);
       ctx.ready = !!provider.value;
       updateSelection(ctx);
       if (!ctx.ready) message(text("Keine Downloadquelle für diese Sprache verfügbar.", "No download provider available for this language."));

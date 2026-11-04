@@ -59,3 +59,33 @@ test('batch stops searching after a source matches', async () => {
   await api.prepare({title:'Example',missing:['S1E2']}, ctx(), [{id:'one',label:'One'},{id:'two',label:'Two'}]);
   assert.equal(calls.filter(call => call[0] === '/api/search').length, 1);
 });
+test('title fallback uses source priority even when a lower source responds first', async () => {
+  const api = setup(async (url, options) => {
+    if (url === '/api/search') {
+      const site = JSON.parse(options.body).site;
+      if (site === 'preferred') await new Promise(resolve => setTimeout(resolve, 10));
+      return response({results:[{title:'Example',url:'https://' + site}]});
+    }
+    return response({imdb_id:''});
+  });
+  const found = await api.find({title:'Example [imdbid-tt123]'}, ctx(), [
+    {id:'preferred',label:'Preferred'}, {id:'other',label:'Other'},
+  ]);
+  assert.equal(found.hits[found.match].url, 'https://preferred');
+});
+test('conflicting IMDb IDs remain excluded from title fallback', async () => {
+  const api = setup(async (url, options) => url === '/api/search'
+    ? response({results:[{title:'Example',url:'https://' + JSON.parse(options.body).site}]})
+    : response({imdb_id:url.includes('preferred') ? 'tt999' : ''}));
+  const found = await api.find({title:'Example [imdbid-tt123]'}, ctx(), [
+    {id:'preferred',label:'Preferred'}, {id:'other',label:'Other'},
+  ]);
+  assert.equal(found.hits[found.match].url, 'https://other');
+});
+test('ambiguous titles within the preferred source require a manual choice', async () => {
+  const api = setup(async url => url === '/api/search'
+    ? response({results:[{title:'Example',url:'https://one'},{title:'Example',url:'https://two'}]})
+    : response({imdb_id:''}));
+  const found = await api.find({title:'Example [imdbid-tt123]'}, ctx(), [{id:'x',label:'X'}]);
+  assert.equal(found.match, -1);
+});

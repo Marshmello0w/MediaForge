@@ -26,7 +26,7 @@ def gap_page():
     downloads = []
     responses = {
         "/api/search/sources": {"sources": [{"id": "test", "label": "Test", "enabled": True}]},
-        "/api/settings/client": {},
+        "/api/settings/client": {"download_language": "German Dub", "download_provider": "VOE"},
         "/api/search": {"results": [{"title": "Example", "url": "https://source.test/example"}]},
         "/api/series": {"title": "Example", "imdb_id": "tt41298100"},
         "/api/seasons": {"seasons": [
@@ -379,3 +379,35 @@ def test_dialog_fits_viewport_and_keeps_keyboard_focus(gap_page, width):
     output = os.environ.get("MEDIAFORGE_SCREENSHOT_DIR")
     if output:
         page.screenshot(path=str(Path(output) / f"gap-fill-{width}.png"))
+
+
+def test_gap_dialog_uses_saved_download_defaults(gap_page):
+    page, responses, downloads = gap_page
+    responses["/api/settings/client"] = {
+        "download_language": "English Sub", "download_provider": "Filemoon",
+    }
+    responses["/api/providers"]["providers"]["English Sub"] = ["VOE", "Filemoon"]
+    open_gap(page)
+    assert page.locator("#gapFillLanguage").input_value() == "English Sub"
+    assert page.locator("#gapFillProvider").input_value() == "Filemoon"
+    page.locator("#gapFillSubmit").click()
+    page.wait_for_function("document.querySelector('#gapFillSubmit').textContent === 'Hinzugefügt'")
+    assert downloads[0]["language"] == "English Sub"
+    assert downloads[0]["provider"] == "Filemoon"
+
+
+def test_batch_dialog_uses_saved_download_defaults(gap_page):
+    page, responses, downloads = gap_page
+    responses["/api/settings/client"] = {
+        "download_language": "English Sub", "download_provider": "Filemoon",
+    }
+    responses["/api/providers"]["providers"]["English Sub"] = ["VOE", "Filemoon"]
+    page.evaluate("""() => window.openGapFillBatch([
+        {title:'Example', missing_slots:['S1E2']}
+    ])""", isolated_context=False)
+    assert page.locator("#gapBatchLanguage").input_value() == "English Sub"
+    assert page.locator("#gapBatchProvider").input_value() == "Filemoon"
+    page.locator("#gapBatchSubmit").click()
+    page.wait_for_function("document.querySelector('#gapBatchSubmit').textContent === 'Abgeschlossen'")
+    assert downloads[0]["language"] == "English Sub"
+    assert downloads[0]["provider"] == "Filemoon"

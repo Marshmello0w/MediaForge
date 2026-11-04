@@ -83,6 +83,7 @@
     const [catalogue, settings] = await Promise.all([
       request("/api/search/sources", ctx), request("/api/settings/client", ctx),
     ]);
+    ctx.defaults = { language: settings.download_language, provider: settings.download_provider };
     const enabled = ((settings || {}).sources || {}).enabled || {};
     const order = catalogue.order || [];
     return (catalogue.sources || []).filter(function (source) {
@@ -96,10 +97,10 @@
   }
   async function find(item, ctx, catalogue) {
     const keyword = searchTitle(item.title);
-    const results = await Promise.allSettled(catalogue.map(async function (source) {
+    const results = await Promise.allSettled(catalogue.map(async function (source, sourceRank) {
       const data = await request("/api/search", ctx, { keyword: keyword, site: source.id });
       return (data.results || []).filter(function (hit) { return hit.url && !hit.is_movie; })
-        .map(function (hit) { return { ...hit, sourceLabel: source.label }; });
+        .map(function (hit) { return { ...hit, sourceLabel: source.label, sourceRank: sourceRank }; });
     }));
     if (ctx.cancel.signal.aborted) throw new DOMException("Aborted", "AbortError");
     const hits = results.flatMap(function (r) { return r.status === "fulfilled" ? r.value : []; });
@@ -129,7 +130,13 @@
     if (ctx.cancel.signal.aborted) throw new DOMException("Aborted", "AbortError");
     if (match === -1) {
       const titleHits = hits.map(function (hit, index) { return titleMatches(hit) && !conflictingIds.has(hit) ? index : -1; }).filter(function (index) { return index !== -1; });
-      if (titleHits.length === 1) match = titleHits[0];
+      if (titleHits.length) {
+        // Equal titles on different sources follow the configured source order.
+        // Two different series on the preferred source still need a manual choice.
+        const rank = Math.min(...titleHits.map(function (index) { return hits[index].sourceRank; }));
+        const preferred = titleHits.filter(function (index) { return hits[index].sourceRank === rank; });
+        if (preferred.length === 1) match = preferred[0];
+      }
     }
     return { hits: hits, match: match, failed: results.some(function (r) { return r.status === "rejected"; }) };
   }

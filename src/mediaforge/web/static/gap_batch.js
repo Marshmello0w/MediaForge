@@ -67,7 +67,7 @@
         return (entry.episodes || []).flatMap(function (ep) { return ep.languages || []; })
           .concat(Object.keys(entry.initialProviders || {}));
       }))];
-      options(language, langs, "German Dub");
+      options(language, langs, ctx.defaults.language);
       ctx.loading = false;
       await refresh(ctx);
     } catch (error) {
@@ -106,7 +106,7 @@
       if (!entry.hosters.length) blocked++;
       shared = shared === null ? entry.hosters.slice() : shared.filter(function (h) { return entry.hosters.includes(h); });
     });
-    options(provider, shared || [], "VOE");
+    options(provider, shared || [], ctx.defaults.provider);
     submit.disabled = !entries.length || blocked > 0 || !provider.value;
     status.textContent = !entries.length ? text("Nichts ausgewählt.", "Nothing selected.")
       : blocked ? text("Nicht alle ausgewählten Serien sind mit dieser Sprache verfügbar. Prüfe die Hinweise in der Liste.",
